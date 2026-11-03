@@ -67,10 +67,10 @@ def _frame(key: str, value: object) -> str:
     return f'data: {json.dumps({key: value}, separators=_JSON_SEPARATORS)}\n\n'
 
 
-def result_json(obj: object) -> str:
+def result_json(result: object) -> str:
     """Encode a one-shot result as compact ``{"result": ...}`` JSON, the bytes every adapter sends."""
     # Same encoding as to_sse frames: aliases, no null model fields.
-    return json.dumps({'result': _frame_value(obj)}, separators=_JSON_SEPARATORS)
+    return json.dumps({'result': _frame_value(result)}, separators=_JSON_SEPARATORS)
 
 
 def error_json(error: Exception) -> str:
