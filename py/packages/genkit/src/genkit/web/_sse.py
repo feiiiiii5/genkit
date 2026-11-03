@@ -67,6 +67,21 @@ def _frame(key: str, value: object) -> str:
     return f'data: {json.dumps({key: value}, separators=_JSON_SEPARATORS)}\n\n'
 
 
+def result_json(obj: object) -> str:
+    """Encode an action result as compact ``{"result":...}`` wire JSON."""
+    return json.dumps({'result': _frame_value(obj)}, separators=_JSON_SEPARATORS)
+
+
+def error_json(error: Exception) -> str:
+    """Encode a failure as compact ``error_body`` wire JSON."""
+    return json.dumps(error_body(error), separators=_JSON_SEPARATORS)
+
+
+def error_sse(error: Exception) -> str:
+    """Encode a failure as a single ``data: {"error":...}`` SSE frame."""
+    return _frame('error', error_body(error))
+
+
 async def to_sse(handle: StreamHandle) -> AsyncIterator[str]:
     r"""Frame a streaming handle as Genkit SSE lines.
 
@@ -141,4 +156,4 @@ async def to_sse(handle: StreamHandle) -> AsyncIterator[str]:
             _logger.exception('served flow stream failed')
         else:
             _logger.warning('served flow stream failed: %s', e)
-        yield _frame('error', error_body(e))
+        yield error_sse(e)
