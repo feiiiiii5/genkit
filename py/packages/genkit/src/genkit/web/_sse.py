@@ -73,12 +73,12 @@ def result_json(obj: object) -> str:
     return json.dumps({'result': _frame_value(obj)}, separators=_JSON_SEPARATORS)
 
 
-def error_json(error: object) -> str:
+def error_json(error: Exception) -> str:
     """Encode ``error_body(error)`` as compact JSON; pair with ``error_status(error)``."""
     return json.dumps(error_body(error), separators=_JSON_SEPARATORS)
 
 
-def error_sse(error: object) -> str:
+def error_sse(error: Exception) -> str:
     r"""Encode ``error_body(error)`` as one ``data: {"error": ...}\n\n`` SSE frame."""
     # For failures before to_sse runs, e.g. action.stream(...) raising.
     return _frame('error', error_body(error))
