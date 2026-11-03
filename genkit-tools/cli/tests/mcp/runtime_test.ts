@@ -15,27 +15,18 @@
  */
 
 import { RuntimeEvent } from '@genkit-ai/tools-common/manager';
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  jest,
-} from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defineFlowTools } from '../../src/mcp/flows';
 import { defineRuntimeTools } from '../../src/mcp/runtime';
 import { defineTraceTools } from '../../src/mcp/trace';
 import type { McpToolOptions } from '../../src/mcp/utils';
 
-jest.mock('@genkit-ai/tools-common/utils', () => {
-  const actual = jest.requireActual('@genkit-ai/tools-common/utils') as Record<
-    string,
-    unknown
-  >;
+vi.mock('@genkit-ai/tools-common/utils', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@genkit-ai/tools-common/utils')>();
   return {
     ...actual,
-    record: jest.fn(() => Promise.resolve()),
+    record: vi.fn(() => Promise.resolve()),
   };
 });
 
@@ -48,13 +39,13 @@ describe('MCP runtime tools', () => {
   beforeEach(() => {
     registeredTools = {};
     mockServer = {
-      registerTool: jest.fn((name: string, _config: any, handler: any) => {
+      registerTool: vi.fn((name: string, _config: any, handler: any) => {
         registeredTools[name] = handler;
       }),
     };
     mockMcpManager = {
-      getManagerWithDevProcess: jest.fn(),
-      getManager: jest.fn(),
+      getManagerWithDevProcess: vi.fn(),
+      getManager: vi.fn(),
     };
     options = {
       projectRoot: '/workspace',
@@ -68,7 +59,7 @@ describe('MCP runtime tools', () => {
   });
 
   afterEach(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('start_runtime formats standard Error messages', async () => {
@@ -98,18 +89,18 @@ describe('MCP runtime tools', () => {
       | undefined;
     const processPromise = new Promise<void>(() => {});
     const mockRuntimeManager = {
-      listRuntimes: jest.fn().mockReturnValue([{ id: 'old-runtime' }]),
-      onRuntimeEvent: jest.fn((cb: any) => {
+      listRuntimes: vi.fn().mockReturnValue([{ id: 'old-runtime' }]),
+      onRuntimeEvent: vi.fn((cb: any) => {
         runtimeEventListener = cb;
-        return jest.fn();
+        return vi.fn();
       }),
       processManager: {
-        restart: jest.fn(async () => {
+        restart: vi.fn(async () => {
           setTimeout(() => {
             runtimeEventListener?.(RuntimeEvent.ADD, { id: 'new-runtime' });
           }, 10);
         }),
-        waitForProcess: jest.fn(() => processPromise),
+        waitForProcess: vi.fn(() => processPromise),
       },
     };
     mockMcpManager.getManager.mockResolvedValue(mockRuntimeManager);
@@ -125,11 +116,11 @@ describe('MCP runtime tools', () => {
 
   it('restart_runtime returns an error if the restarted process exits before registering', async () => {
     const mockRuntimeManager = {
-      listRuntimes: jest.fn().mockReturnValue([{ id: 'old-runtime' }]),
-      onRuntimeEvent: jest.fn(() => jest.fn()),
+      listRuntimes: vi.fn().mockReturnValue([{ id: 'old-runtime' }]),
+      onRuntimeEvent: vi.fn(() => vi.fn()),
       processManager: {
-        restart: jest.fn(async () => {}),
-        waitForProcess: jest.fn(() =>
+        restart: vi.fn(async () => {}),
+        waitForProcess: vi.fn(() =>
           Promise.reject(new Error('app process exited with code 1'))
         ),
       },
