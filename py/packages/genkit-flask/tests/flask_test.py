@@ -17,8 +17,10 @@
 
 """Tests for the Flask plugin."""
 
+import asyncio
 import json
 import logging
+import threading
 from typing import Any
 
 import pytest
@@ -456,6 +458,41 @@ def test_flask_context_provider_abort_keeps_its_status() -> None:
     response = app.test_client().post('/chat', json={'data': 'x'})
 
     assert response.status_code == 401
+
+
+def test_flask_streaming_client_disconnect_cancels_flow() -> None:
+    """A client that hangs up after the first SSE chunk cancels the flow and lets awaiting `finally:` finish."""
+    ai = Genkit()
+    flow_cancelled = threading.Event()
+    cleanup_finished = threading.Event()
+    app = Flask(__name__)
+    app.config.update({'TESTING': True})
+
+    @app.post('/slow')
+    @genkit_flask_handler(ai)
+    @ai.flow()
+    async def slow(_: str, ctx: FlowContext) -> str:
+        ctx.send_chunk(1)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            flow_cancelled.set()
+            raise
+        finally:
+            await asyncio.sleep(0.02)
+            cleanup_finished.set()
+        return 'never'
+
+    response = app.test_client().post(
+        '/slow', json={'data': 'x'}, headers={'accept': 'text/event-stream'}, buffered=False
+    )
+    first = next(iter(response.response))
+    # Werkzeug closes the response iterator when the client goes away.
+    response.close()
+
+    assert first == b'data: {"message":1}\n\n'
+    assert flow_cancelled.is_set()
+    assert cleanup_finished.is_set()
 
 
 def test_flask_failure_logs_name_the_flow(caplog: pytest.LogCaptureFixture) -> None:
