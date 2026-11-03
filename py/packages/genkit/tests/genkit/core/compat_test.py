@@ -9,7 +9,9 @@ import sys
 
 import pytest
 
-from genkit._core._compat import await_unchained
+from genkit import Message, Part, Role
+from genkit._ai._generate import stamp_cancelled_error
+from genkit._core._compat import await_unchained, cancelled_history
 
 
 @pytest.mark.asyncio
@@ -139,3 +141,73 @@ async def test_await_unchained_500_deep_cancel_and_repr_stay_bounded() -> None:
             await outer
     finally:
         sys.setrecursionlimit(previous_limit)
+
+
+def _order_history() -> tuple[list[Message], Message]:
+    history = [Message(role=Role.USER, content=[Part.from_text('book dinner for 2')])]
+    partial = Message(role=Role.MODEL, content=[Part.from_text('reserving table')])
+    return history, partial
+
+
+@pytest.mark.asyncio
+async def test_cancelled_history_reads_stamp_across_task_hops() -> None:
+    """History stamped inside a cancelled task is found after awaiting through two task hops."""
+    history, partial = _order_history()
+    started = asyncio.Event()
+
+    async def reserve() -> None:
+        try:
+            started.set()
+            await asyncio.sleep(10)
+        except asyncio.CancelledError as exc:
+            stamp_cancelled_error(exc=exc, messages=history, message=partial)
+            raise
+
+    async def book() -> None:
+        await asyncio.create_task(reserve())
+
+    task = asyncio.create_task(book())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await task
+
+    found = cancelled_history(exc_info.value)
+    assert found is not None
+    messages, message = found
+    assert [m.text for m in messages] == ['book dinner for 2']
+    assert message is not None
+    assert message.text == 'reserving table'
+    # 3.10 hands back a fresh CancelledError; 3.11+ returns the stamped one.
+    assert (exc_info.value.__dict__.get('messages') is None) == (sys.version_info < (3, 11))
+
+
+def test_cancelled_history_returns_none_without_stamp() -> None:
+    """Unstamped cancels and unrelated errors have no history."""
+    assert cancelled_history(asyncio.CancelledError()) is None
+    assert cancelled_history(ValueError('kitchen closed')) is None
+
+
+def test_cancelled_history_walks_context_only_on_310() -> None:
+    """A stamp on __context__ is read on 3.10 only; 3.11+ reads the exception itself."""
+    history, partial = _order_history()
+    stamped = asyncio.CancelledError()
+    stamp_cancelled_error(exc=stamped, messages=history, message=partial)
+    fresh = asyncio.CancelledError()
+    fresh.__context__ = stamped
+
+    found = cancelled_history(fresh)
+    if sys.version_info < (3, 11):
+        assert found is not None
+        assert [m.text for m in found[0]] == ['book dinner for 2']
+    else:
+        assert found is None
+
+
+def test_cancelled_history_stops_on_context_cycle() -> None:
+    """A self-referencing __context__ chain terminates."""
+    a = asyncio.CancelledError()
+    b = asyncio.CancelledError()
+    a.__context__ = b
+    b.__context__ = a
+    assert cancelled_history(a) is None
