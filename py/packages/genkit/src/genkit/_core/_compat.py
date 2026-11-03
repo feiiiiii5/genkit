@@ -37,12 +37,12 @@ if TYPE_CHECKING:
 _T = TypeVar('_T')
 
 
-def cancelled_history(exc: BaseException) -> 'tuple[list[Message], Message | None] | None':
-    """Return the ``(messages, message)`` that generate attached to a cancel, or None.
+def cancelled_history(exc: BaseException) -> 'list[Message] | None':
+    """Return the history that generate attached to a cancel, or None.
 
-    On a foreign cancel, generate sets ``messages`` (closed history) and
-    ``message`` (partial tool-turn message) on the ``CancelledError`` it
-    re-raises. On 3.11+ awaiting the cancelled task re-raises that same
+    On a foreign cancel, generate sets ``messages`` on the ``CancelledError``
+    it re-raises: the history up to the last completed round, with no
+    partial turn. On 3.11+ awaiting the cancelled task re-raises that same
     object. On 3.10 it raises a fresh ``CancelledError`` and the original
     is its ``__context__``, once per task hop, so walk the chain.
 
@@ -53,7 +53,7 @@ def cancelled_history(exc: BaseException) -> 'tuple[list[Message], Message | Non
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
         if isinstance(cur, asyncio.CancelledError) and 'messages' in cur.__dict__:
-            return cur.__dict__['messages'], cur.__dict__.get('message')
+            return cur.__dict__['messages']
         if sys.version_info >= (3, 11):
             return None
         cur = cur.__context__

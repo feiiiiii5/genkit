@@ -853,7 +853,7 @@ async def run_generate(
             call=call,
         )
     except asyncio.CancelledError as exc:
-        stamp_cancelled_error(exc=exc, messages=call.messages, message=call.pending_message)
+        stamp_cancelled_error(exc=exc, messages=call.messages)
         raise
     except (Exception, _StreamingCallbackError) as exc:
         if streaming_callback_cause(exc=exc) is None:
@@ -1068,10 +1068,6 @@ class GenerateRun:
     output: GenerateActionOutputConfig | None = None
     request: ModelRequest | None = None
     answered: ModelResponse | None = None
-    # Partial tool turn with pendingOutput on finished siblings. Only a foreign
-    # cancel reads it (stamp_cancelled_error); failed and aborted responses
-    # carry no unfinished message.
-    pending_message: Message | None = None
 
     def earned(self) -> ModelResponse:
         """What this turn already cost, for a failure landing after the model answered.
@@ -1241,19 +1237,17 @@ def stamp_cancelled_error(
     *,
     exc: asyncio.CancelledError,
     messages: list[Message],
-    message: Message | None,
 ) -> None:
-    """Attach closed history and any partial tool-turn message onto a foreign CancelledError.
+    """Attach the closed history onto a foreign CancelledError as ``messages``.
 
-    Only the exception is stamped, never the current task: a long-lived caller
-    task would carry stale history into later calls. Read it back with
-    ``genkit._core._compat.cancelled_history``, which handles 3.10 re-raising a
-    fresh ``CancelledError`` on await.
+    The history ends at the last completed round. The unfinished turn is
+    dropped, as on a failed or aborted response. Only the exception is
+    stamped, never the current task: a long-lived caller task would carry
+    stale history into later calls. Read it back with
+    ``genkit._core._compat.cancelled_history``, which handles 3.10 re-raising
+    a fresh ``CancelledError`` on await.
     """
-    stamped_messages = [as_message(m) for m in messages]
-    stamped_message = as_message(message) if message is not None else None
-    exc.__dict__['messages'] = stamped_messages
-    exc.__dict__['message'] = stamped_message
+    exc.__dict__['messages'] = [as_message(m) for m in messages]
 
 
 def raise_if_foreign_cancel(
@@ -1261,13 +1255,12 @@ def raise_if_foreign_cancel(
     exc: BaseException,
     abort_signal: asyncio.Event,
     messages: list[Message] | None = None,
-    message: Message | None = None,
 ) -> None:
     # abort_signal is our own stop. A wait_for / task.cancel() has to
     # surface as CancelledError so the deadline still works.
     if isinstance(exc, asyncio.CancelledError) and not abort_signal.is_set():
         if messages is not None:
-            stamp_cancelled_error(exc=exc, messages=messages, message=message)
+            stamp_cancelled_error(exc=exc, messages=messages)
         raise
 
 
@@ -1458,7 +1451,6 @@ async def run_wrap_generate(
 
     call.ticket = None
     call.last_response = None
-    call.pending_message = None
     call.output = options.output
 
     async def run_turn(
@@ -1501,7 +1493,6 @@ async def run_wrap_generate(
             exc=exc,
             abort_signal=ctx.abort_signal,
             messages=call.messages,
-            message=call.pending_message,
         )
         # A hook can raise before the model ever built a request. Build it here
         # so the caller still gets back what they asked for; the cost is only
@@ -1563,7 +1554,6 @@ async def generate_turn(
         mw_pipeline=mw_pipeline,
         resolved=resolved,
         on_tool_chunk=make_tool_chunk_streamer(chunks=chunks, ctx=ctx),
-        call=call,
     )
     if paused:
         # The restart paused again. They can answer it the same
@@ -1595,7 +1585,6 @@ async def generate_turn(
             exc=exc,
             abort_signal=ctx.abort_signal,
             messages=call.messages,
-            message=call.pending_message,
         )
         return box_from_exc(
             response=call.earned(),
@@ -1877,14 +1866,12 @@ async def run_tools_or_stop(
             mw_pipeline=mw_pipeline,
             tools=resolved.tools,
             on_tool_chunk=make_tool_chunk_streamer(chunks=chunks, ctx=ctx),
-            call=call,
         )
     except TURN_FAILURES as exc:
         raise_if_foreign_cancel(
             exc=exc,
             abort_signal=ctx.abort_signal,
             messages=list(options.messages),
-            message=call.pending_message,
         )
         return box_from_exc(
             response=response,
@@ -2212,7 +2199,6 @@ async def resolve_tool_requests(
     mw_pipeline: MiddlewarePipeline,
     tools: list[Action],
     on_tool_chunk: Callable[[Part, object], None] | None = None,
-    call: GenerateRun | None = None,
 ) -> tuple[Message | None, Message | None]:
     """Execute tool requests in a message, returning responses or interrupt info."""
     # The door Actions are what run. wrap_tool can wrap them; it cannot
@@ -2288,38 +2274,10 @@ async def resolve_tool_requests(
             logger.debug('tool triggered an interrupt', tool=trp.tool_request.name)
             return (None, interrupt_request_part(trp, intr))
 
-    settled: list[tuple[MultipartToolResponse | None, Part | None] | BaseException] = []
-    try:
-        outs = await gather_turn(
-            [run_one_tool(tool, trp) for _, tool, trp in work],
-            watched_abort=mw_pipeline.ctx.abort_signal,
-            settled=settled,
-        )
-    except BaseException:
-        if call is not None:
-            has_completed_sibling = False
-            for (idx, _tool, tool_req_root), outcome in zip(work, settled, strict=False):
-                if isinstance(outcome, BaseException):
-                    continue
-                multipart_resp, _interrupt_part = outcome
-                if multipart_resp is not None:
-                    tool_req = tool_req_root.tool_request
-                    if tool_req is None:
-                        continue
-                    tool_response_part = Part(
-                        tool_response=ToolResponse(
-                            name=tool_req.name,
-                            ref=tool_req.ref,
-                            output=multipart_resp.output,
-                            content=parts_to_wire(multipart_resp.content, tool_name=tool_req.name),
-                        ),
-                        metadata=multipart_resp.metadata,
-                    )
-                    revised_model_message.content[idx] = to_pending_response(tool_req_root, tool_response_part)
-                    has_completed_sibling = True
-            if has_completed_sibling:
-                call.pending_message = as_message(revised_model_message)
-        raise
+    outs = await gather_turn(
+        [run_one_tool(tool, trp) for _, tool, trp in work],
+        watched_abort=mw_pipeline.ctx.abort_signal,
+    )
 
     has_interrupts = False
     response_parts: list[Part] = []
@@ -2354,7 +2312,6 @@ async def gather_turn(
     coros: Sequence[Awaitable[T]],
     *,
     watched_abort: asyncio.Event | None,
-    settled: list[T | BaseException] | None = None,
 ) -> list[T]:
     """Run one turn's tools concurrently. If one fails, cancel and await the rest.
 
@@ -2393,9 +2350,7 @@ async def gather_turn(
         cancel_pending()
         # return_exceptions retrieves every sibling's outcome (including a
         # sibling's Interrupt) so none masks the original or goes unretrieved.
-        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
-        if settled is not None:
-            settled.extend(outcomes)
+        await asyncio.gather(*tasks, return_exceptions=True)
         raise
     finally:
         if watcher_task is not None:
@@ -2499,28 +2454,21 @@ async def execute_tool_request(
         closing = True
         tool_task.cancel()
         raise
-    except BaseException as exc:
-        aborted = isinstance(exc, asyncio.CancelledError) and abort_signal.is_set()
-        if (
-            isinstance(exc, asyncio.CancelledError)
-            and tool_task.done()
-            and not tool_task.cancelled()
-            and tool_task.exception() is None
-        ):
-            # tool_task already committed its return value before the outer cancel
-            # (deadline, gather teardown, or abort) reached the wait wrapper; keep
-            # the completed output so its side effect is not lost. An abort is
-            # still caught before the next model call.
+    except asyncio.CancelledError:
+        if abort_signal.is_set() and tool_task.done() and not tool_task.cancelled() and tool_task.exception() is None:
+            # The tool returned before the abort reached this wait. Keep its
+            # output so a round whose tools all finished still closes; the abort
+            # stops the loop before the next model call.
             tool_response = tool_task.result()
         else:
-            # An outer cancel (deadline / gather teardown) cancels the wait future,
-            # not tool_task itself — cancel and await tool_task so its finally blocks
-            # and async context managers finish cleanly and any teardown exception is
-            # retrieved.
+            # An outer cancel (deadline, gather_turn teardown, or abort) cancels
+            # the wait, not tool_task itself. Cancel and await tool_task so its
+            # finally blocks and async context managers finish and any teardown
+            # exception is retrieved.
             cancel_tool()
             with contextlib.suppress(BaseException):
                 await tool_task
-            if aborted:
+            if abort_signal.is_set():
                 raise GenkitError(status='CANCELLED', message='Task aborted') from None
             raise
     finally:
@@ -2601,7 +2549,6 @@ async def resolve_resume_options(
     mw_pipeline: MiddlewarePipeline | None = None,
     resolved: ResolvedTurn,
     on_tool_chunk: Callable[[Part, object], None] | None = None,
-    call: GenerateRun | None = None,
 ) -> tuple[GenerateActionOptions, ModelResponse | None, Message | None]:
     """Handle resume options by resolving pending tool calls from a previous turn."""
     if not options.resume:
@@ -2629,42 +2576,19 @@ async def resolve_resume_options(
     ]
     # Restarts run without execute_tool_request's abort watcher, so nothing
     # else cancels them: always cancel the rest when one fails.
-    settled: list[tuple[Part, Part | None] | BaseException] = []
-    try:
-        resolved_tools = await gather_turn(
-            [
-                resolve_resumed_tool(
-                    options=options,
-                    tool_request_part=part,
-                    mw_pipeline=mw_pipeline,
-                    tools=resolved.tools,
-                    on_tool_chunk=on_tool_chunk,
-                )
-                for _, part in indexed_requests
-            ],
-            watched_abort=None,
-            settled=settled,
-        )
-    except BaseException:
-        # Only a restart runs the tool again, so only a finished restart has a
-        # side effect worth stashing. Respond answers and pendingOutput reuses
-        # are already in the caller's saved conversation; echoing them back
-        # would hand over a saved part that just failed validation.
-        if call is not None:
-            has_completed_restart = False
-            for (index, orig_part), outcome in zip(indexed_requests, settled, strict=False):
-                if isinstance(outcome, BaseException):
-                    continue
-                resumed_request, resumed_response = outcome
-                if resumed_response is None or not ran_restart(options=options, tool_request_part=orig_part):
-                    continue
-                updated_content[index] = to_pending_response(resumed_request, resumed_response)
-                has_completed_restart = True
-            if has_completed_restart:
-                revised_message = last_message.model_copy(deep=True)
-                revised_message.content = updated_content
-                call.pending_message = as_message(revised_message)
-        raise
+    resolved_tools = await gather_turn(
+        [
+            resolve_resumed_tool(
+                options=options,
+                tool_request_part=part,
+                mw_pipeline=mw_pipeline,
+                tools=resolved.tools,
+                on_tool_chunk=on_tool_chunk,
+            )
+            for _, part in indexed_requests
+        ],
+        watched_abort=None,
+    )
 
     tool_responses = []
     has_interrupts = False
@@ -2717,22 +2641,6 @@ async def resolve_resume_options(
     revised_request.messages.append(tool_message)
 
     return (revised_request, None, tool_message)
-
-
-def ran_restart(*, options: GenerateActionOptions, tool_request_part: Part) -> bool:
-    """Whether resolve_resumed_tool resolves this request by running the tool again.
-
-    Mirrors its precedence: a saved ``pendingOutput`` wins, then a
-    ``resume.respond`` answer, then a ``resume.restart``.
-    """
-    if tool_request_part.metadata and 'pendingOutput' in tool_request_part.metadata:
-        return False
-    resume = options.resume
-    if resume is None:
-        return False
-    if matching_tool_response(responses=resume.respond or [], tool_request=tool_request_part) is not None:
-        return False
-    return matching_restart(restarts=resume.restart, tool_request=tool_request_part) is not None
 
 
 async def resolve_resumed_tool(
@@ -2800,11 +2708,11 @@ async def resolve_resumed_tool(
         tool_request=tool_req_root,
     )
     if provided_response:
-        # remove the 'interrupt' but leave a 'resolvedInterrupt' when present
+        # remove the 'interrupt' but leave a 'resolvedInterrupt'
         metadata = dict(tool_req_root.metadata) if tool_req_root.metadata else {}
-        interrupt = metadata.pop('interrupt', None)
-        if interrupt is not None:
-            metadata['resolvedInterrupt'] = interrupt
+        interrupt = metadata.get('interrupt')
+        if interrupt:
+            del metadata['interrupt']
         return (
             Part(
                 tool_request=ToolRequest(
@@ -2812,7 +2720,7 @@ async def resolve_resumed_tool(
                     ref=tool_req.ref,
                     input=tool_req.input,
                 ),
-                metadata=metadata or None,
+                metadata={**metadata, 'resolvedInterrupt': interrupt},
             ),
             provided_response,
         )
@@ -2842,9 +2750,9 @@ async def resolve_resumed_tool(
                 return (interrupt_request_part(tool_req_root, intr), None)
             raise
         metadata = dict(tool_req_root.metadata) if tool_req_root.metadata else {}
-        interrupt = metadata.pop('interrupt', None)
-        if interrupt is not None:
-            metadata['resolvedInterrupt'] = interrupt
+        interrupt = metadata.get('interrupt')
+        if interrupt:
+            del metadata['interrupt']
         return (
             Part(
                 tool_request=ToolRequest(
@@ -2852,7 +2760,7 @@ async def resolve_resumed_tool(
                     ref=tool_req.ref,
                     input=tool_req.input,
                 ),
-                metadata=metadata or None,
+                metadata={**metadata, 'resolvedInterrupt': interrupt},
             ),
             executed,
         )

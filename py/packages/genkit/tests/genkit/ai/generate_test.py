@@ -2631,7 +2631,7 @@ async def test_failed_tool_turn_leaves_no_unretrieved_task_exceptions() -> None:
         )
         assert response.error is not None
         assert response.error.message == 'allergen db down'
-        await asyncio.wait_for(void_cleaned_up.wait(), timeout=2.0)
+        assert void_cleaned_up.is_set()
         await asyncio.sleep(0)
         gc.collect()
         await asyncio.sleep(0)
@@ -2721,7 +2721,7 @@ async def test_failing_tool_with_sibling_interrupt_retrieves_base_exception_clea
         assert response.finish_reason == FinishReason.FAILED
         assert response.error is not None
         assert response.error.message == 'allergen db down'
-        await asyncio.wait_for(refund_cleaned_up.wait(), timeout=2.0)
+        assert refund_cleaned_up.is_set()
         await asyncio.sleep(0)
         gc.collect()
         await asyncio.sleep(0)
@@ -9788,8 +9788,8 @@ async def test_parallel_tool_abort_after_sibling_completes_returns_no_unfinished
 
 
 @pytest.mark.asyncio
-async def test_parallel_tool_task_cancel_attaches_closed_history_and_completed_sibling_pending_output() -> None:
-    """Cancelling the generate task mid-turn attaches .messages and .message onto CancelledError, not the task."""
+async def test_parallel_tool_task_cancel_attaches_closed_history_only() -> None:
+    """Cancelling generate mid-turn stamps closed history on the CancelledError only, with no partial turn."""
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
     charge_done = asyncio.Event()
@@ -9824,10 +9824,6 @@ async def test_parallel_tool_task_cancel_attaches_closed_history_and_completed_s
                 ],
             ),
         ),
-        ModelResponse(
-            finish_reason=FinishReason.STOP,
-            message=Message(role=Role.MODEL, content=[Part.from_text('recovered from cancel')]),
-        ),
     ]
 
     task = asyncio.create_task(ai.generate(prompt='book dinner', tools=['charge_card', 'reserve_table']))
@@ -9837,31 +9833,19 @@ async def test_parallel_tool_task_cancel_attaches_closed_history_and_completed_s
     with pytest.raises(asyncio.CancelledError) as exc_info:
         await task
 
-    await asyncio.wait_for(reserve_cleaned_up.wait(), timeout=2.0)
+    assert reserve_cleaned_up.is_set()
     assert not hasattr(task, 'messages')
-    assert not hasattr(task, 'message')
     found = cancelled_history(exc_info.value)
     assert found is not None
-    saved_messages, saved_message = found
-    assert [m.role for m in saved_messages] == [Role.USER]
-    assert isinstance(saved_message, Message)
-    assert saved_message.content[0].metadata == {'pendingOutput': 'charged-100'}
-    assert saved_message.content[1].metadata is None
-    assert charges == ['charged-100']
-
-    resumed = await ai.generate(
-        messages=[*saved_messages, saved_message],
-        tools=['charge_card', 'reserve_table'],
-        resume_respond=[saved_message.content[1].respond('manual-table-11')],
-    )
-    assert resumed.finish_reason == FinishReason.STOP
-    assert resumed.text == 'recovered from cancel'
+    # The unfinished tool turn is dropped even though charge_card finished.
+    assert [m.role for m in found] == [Role.USER]
+    assert 'message' not in exc_info.value.__dict__
     assert charges == ['charged-100']
 
 
 @pytest.mark.asyncio
 async def test_cancelled_generate_leaves_no_history_on_long_lived_caller_task() -> None:
-    """A caller task that survives a cancelled generate carries no messages/message attributes."""
+    """A caller task that survives a cancelled generate carries no messages attribute."""
     ai = Genkit(model='scriptedModel')
     pm, _ = define_scripted_model(ai)
     reserve_started = asyncio.Event()
@@ -9886,7 +9870,7 @@ async def test_cancelled_generate_leaves_no_history_on_long_lived_caller_task() 
         ),
     ]
 
-    async def concierge() -> tuple[bool, bool, str, list[Role | str]]:
+    async def concierge() -> tuple[bool, str, list[Role | str]]:
         # 1. Generate runs directly on this task, so a task stamp would land here.
         me = asyncio.current_task()
         assert me is not None
@@ -9895,7 +9879,7 @@ async def test_cancelled_generate_leaves_no_history_on_long_lived_caller_task() 
         except asyncio.CancelledError as exc:
             found = cancelled_history(exc)
             assert found is not None
-            history_roles = [m.role for m in found[0]]
+            history_roles = [m.role for m in found]
             if sys.version_info >= (3, 11):
                 me.uncancel()
         else:
@@ -9903,14 +9887,14 @@ async def test_cancelled_generate_leaves_no_history_on_long_lived_caller_task() 
 
         # 2. The task keeps serving later calls.
         later = await ai.generate(prompt='show the menu')
-        return hasattr(me, 'messages'), hasattr(me, 'message'), later.text, history_roles
+        return hasattr(me, 'messages'), later.text, history_roles
 
     task = asyncio.create_task(concierge())
     await reserve_started.wait()
     task.cancel()
-    has_messages, has_message, later_text, history_roles = await task
+    has_messages, later_text, history_roles = await task
 
-    assert (has_messages, has_message) == (False, False)
+    assert has_messages is False
     assert later_text == 'menu ready'
     assert history_roles == [Role.USER]
 
