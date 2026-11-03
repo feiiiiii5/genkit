@@ -41,6 +41,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
 from genkit import FlowContext, Genkit, PublicError
+from genkit.web import ContextProvider, RequestData
 
 FlowBody = Callable[[str, FlowContext], Awaitable[Any]]
 
@@ -68,6 +69,10 @@ class Served:
     body: bytes
     # (level, message, has_traceback) for each record the adapter logged.
     logs: tuple[tuple[str, str, bool], ...] = ()
+
+
+async def _ok(_: str, _ctx: FlowContext) -> str:
+    return 'served'
 
 
 async def _missing_order(_: str, ctx: FlowContext) -> None:
@@ -109,20 +114,36 @@ async def _plain_dict_with_null_and_key_order(_: str, ctx: FlowContext) -> dict[
     return {'z': 1, 'a': None}
 
 
-def _adapter_logs(caplog: pytest.LogCaptureFixture) -> tuple[tuple[str, str, bool], ...]:
-    return tuple(
-        (r.levelname, r.getMessage(), r.exc_info is not None)
+def _deny_unauthenticated(_request: RequestData) -> dict[str, object]:
+    raise PublicError('UNAUTHENTICATED', 'not signed in')
+
+
+def _crash_auth_lookup(_request: RequestData) -> dict[str, object]:
+    raise ValueError('auth db down for alice@example.com')
+
+
+def _adapter_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        r
         for r in caplog.records
         if r.name.startswith(('genkit.web', 'genkit_django', 'genkit_flask', 'genkit_fastapi'))
-    )
+    ]
 
 
-def _serve_flask(body: FlowBody, headers: dict[str, str]) -> tuple[int, str, bytes]:
+def _adapter_logs(caplog: pytest.LogCaptureFixture) -> tuple[tuple[str, str, bool], ...]:
+    return tuple((r.levelname, r.getMessage(), r.exc_info is not None) for r in _adapter_records(caplog))
+
+
+def _serve_flask(
+    body: FlowBody,
+    headers: dict[str, str],
+    context_provider: ContextProvider | None = None,
+) -> tuple[int, str, bytes]:
     ai = Genkit()
     app = Flask(__name__)
 
     @app.post('/order')
-    @genkit_flask_handler(ai)
+    @genkit_flask_handler(ai, context_provider=context_provider)
     @ai.flow(name='order')
     async def order(data: str, ctx: FlowContext) -> Any:  # noqa: ANN401
         return await body(data, ctx)
@@ -131,12 +152,16 @@ def _serve_flask(body: FlowBody, headers: dict[str, str]) -> tuple[int, str, byt
     return response.status_code, response.headers['Content-Type'], response.get_data()
 
 
-def _serve_fastapi(body: FlowBody, headers: dict[str, str]) -> tuple[int, str, bytes]:
+def _serve_fastapi(
+    body: FlowBody,
+    headers: dict[str, str],
+    context_provider: ContextProvider | None = None,
+) -> tuple[int, str, bytes]:
     ai = Genkit()
     app = FastAPI()
 
     @app.post('/order')
-    @genkit_fastapi_handler(ai)
+    @genkit_fastapi_handler(ai, context_provider=context_provider)
     @ai.flow(name='order')
     async def order(data: str, ctx: FlowContext) -> Any:  # noqa: ANN401
         return await body(data, ctx)
@@ -145,10 +170,14 @@ def _serve_fastapi(body: FlowBody, headers: dict[str, str]) -> tuple[int, str, b
     return response.status_code, response.headers['content-type'], response.content
 
 
-def _serve_django(body: FlowBody, headers: dict[str, str]) -> tuple[int, str, bytes]:
+def _serve_django(
+    body: FlowBody,
+    headers: dict[str, str],
+    context_provider: ContextProvider | None = None,
+) -> tuple[int, str, bytes]:
     ai = Genkit()
 
-    @genkit_django_handler(ai)
+    @genkit_django_handler(ai, context_provider=context_provider)
     @ai.flow(name='order')
     async def order(data: str, ctx: FlowContext) -> Any:  # noqa: ANN401
         return await body(data, ctx)
@@ -173,61 +202,89 @@ ADAPTERS = {'django': _serve_django, 'flask': _serve_flask, 'fastapi': _serve_fa
 
 INTERNAL = b'{"message":"Internal Error","status":"INTERNAL"}'
 NOT_FOUND = b'{"message":"no order 99","status":"NOT_FOUND"}'
+UNAUTHENTICATED = b'{"message":"not signed in","status":"UNAUTHENTICATED"}'
 
 FAILURE_CASES = [
     pytest.param(
         _missing_order,
         {},
-        Served(404, JSON_CT, NOT_FOUND, (('WARNING', 'served flow run failed: NOT_FOUND: no order 99', False),)),
+        None,
+        Served(
+            404, JSON_CT, NOT_FOUND, (('WARNING', "served action 'order' run failed: NOT_FOUND: no order 99", False),)
+        ),
         id='public-error',
     ),
     pytest.param(
         _card_declined,
         {},
-        Served(500, JSON_CT, INTERNAL, (('ERROR', 'served flow run failed', True),)),
+        None,
+        Served(500, JSON_CT, INTERNAL, (('ERROR', "served action 'order' run failed", True),)),
         id='internal-error',
     ),
     pytest.param(
         _starter_then_missing,
         SSE,
+        None,
         Served(
             200,
             SSE_CT,
             b'data: {"message":{"course":"starter"}}\n\n' + b'data: {"error":' + NOT_FOUND + b'}\n\n',
-            (('WARNING', 'served flow stream failed: NOT_FOUND: no order 99', False),),
+            (('WARNING', "served action 'order' stream failed: NOT_FOUND: no order 99", False),),
         ),
         id='stream-public-error',
     ),
     pytest.param(
         _starter_then_declined,
         SSE,
+        None,
         Served(
             200,
             SSE_CT,
             b'data: {"message":{"course":"starter"}}\n\n' + b'data: {"error":' + INTERNAL + b'}\n\n',
-            (('ERROR', 'served flow stream failed', True),),
+            (('ERROR', "served action 'order' stream failed", True),),
         ),
         id='stream-internal-error',
+    ),
+    pytest.param(
+        _ok,
+        {},
+        _deny_unauthenticated,
+        Served(
+            401,
+            JSON_CT,
+            UNAUTHENTICATED,
+            (('WARNING', "served action 'order' context provider failed: UNAUTHENTICATED: not signed in", False),),
+        ),
+        id='context-provider-public-error',
+    ),
+    pytest.param(
+        _ok,
+        {},
+        _crash_auth_lookup,
+        Served(500, JSON_CT, INTERNAL, (('ERROR', "served action 'order' context provider failed", True),)),
+        id='context-provider-internal-error',
     ),
 ]
 
 
 @pytest.mark.parametrize('adapter', list(ADAPTERS))
-@pytest.mark.parametrize(('body', 'headers', 'expected'), FAILURE_CASES)
+@pytest.mark.parametrize(('body', 'headers', 'context_provider', 'expected'), FAILURE_CASES)
 def test_failed_flow_is_served_the_same_by_every_adapter(
     adapter: str,
     body: FlowBody,
     headers: dict[str, str],
+    context_provider: ContextProvider | None,
     expected: Served,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A failing flow gets the same status, Content-Type, bytes and logs from Django, Flask and FastAPI."""
     # 1. Serve the flow through one adapter and capture its log records
     with caplog.at_level(logging.DEBUG):
-        status, content_type, content = ADAPTERS[adapter](body, headers)
+        status, content_type, content = ADAPTERS[adapter](body, headers, context_provider)
 
     # 2. The client and the server log see the exact shared contract
     assert Served(status, content_type, content, _adapter_logs(caplog)) == expected
+    assert [getattr(r, 'genkit_action', None) for r in _adapter_records(caplog)] == ['order'] * len(expected.logs)
 
     # 3. The internal message never reaches the client
     assert b'alice@example.com' not in content

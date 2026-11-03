@@ -34,12 +34,13 @@ from genkit.web._sse import error_json, error_sse, result_json
 logger = logging.getLogger(__name__)
 
 
-def _log_failure(*, error: Exception, where: str) -> None:
-    """Log a served-flow failure; 5xx includes the traceback."""
+def _log_failure(*, error: Exception, flow: str, where: str) -> None:
+    """Log a served-action failure, naming the action; 5xx includes the traceback."""
+    extra = {'genkit_action': flow}
     if error_status(error) >= 500:
-        logger.exception('served flow %s failed', where)
+        logger.exception('served action %r %s failed', flow, where, extra=extra)
     else:
-        logger.warning('served flow %s failed: %s', where, error)
+        logger.warning('served action %r %s failed: %s', flow, where, error, extra=extra)
 
 
 def _error_response(error: Exception, status: int | None = None) -> Response:
@@ -135,7 +136,7 @@ def genkit_flask_handler(
             try:
                 input_data = _parse_request_json()
             except PublicError as e:
-                _log_failure(error=e, where='run')
+                _log_failure(error=e, flow=flow.name, where='run')
                 return _error_response(e)
             try:
                 action_input = read_body(input_data)
@@ -156,7 +157,7 @@ def genkit_flask_handler(
                     # The app's own abort(401) passes through.
                     raise
                 except Exception as e:
-                    _log_failure(error=e, where='context provider')
+                    _log_failure(error=e, flow=flow.name, where='context provider')
                     return _error_response(e)
 
             init = input_data.get('init')
@@ -166,7 +167,7 @@ def genkit_flask_handler(
                     try:
                         stream_response = flow.stream(input=action_input, context=action_context, init=init)
                     except Exception as e:
-                        _log_failure(error=e, where='stream')
+                        _log_failure(error=e, flow=flow.name, where='stream')
                         yield error_sse(e)
                         return
                     async for line in to_sse(stream_response):
@@ -177,7 +178,7 @@ def genkit_flask_handler(
                 response = await flow.run(input=action_input, context=action_context, init=init)
                 return Response(response=result_json(response.response), mimetype='application/json')
             except Exception as e:
-                _log_failure(error=e, where='run')
+                _log_failure(error=e, flow=flow.name, where='run')
                 return _error_response(e)
 
         return handler
