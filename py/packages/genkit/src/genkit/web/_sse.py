@@ -68,36 +68,19 @@ def _frame(key: str, value: object) -> str:
 
 
 def result_json(obj: object) -> str:
-    """Encode a one-shot action result as compact ``{"result": ...}`` wire JSON.
-
-    Serializes Pydantic models (including nested lists and dicts) by camelCase
-    alias with ``None`` model fields omitted, and encodes ``datetime`` and
-    ``UUID`` values—the exact bytes ``genkit-fastapi``, ``genkit-flask``, and
-    ``genkit-django`` send on 200 JSON responses. Plain ``dict`` keys with
-    ``None`` values and top-level ``None`` results (``{"result":null}``) stay
-    intact.
-    """
+    """Encode a one-shot result as compact ``{"result": ...}`` JSON, the bytes every adapter sends."""
+    # Same encoding as to_sse frames: aliases, no null model fields.
     return json.dumps({'result': _frame_value(obj)}, separators=_JSON_SEPARATORS)
 
 
 def error_json(error: object) -> str:
-    """Encode a served-action failure as compact ``error_body`` wire JSON; pairs with ``error_status``.
-
-    Serializes ``error_body(error)`` with ``(',', ':')`` separators so only a
-    ``PublicError`` or bad-input validation message reaches the caller and
-    everything else becomes ``{"message":"Internal Error","status":"INTERNAL"}``.
-    """
+    """Encode ``error_body(error)`` as compact JSON; pair with ``error_status(error)``."""
     return json.dumps(error_body(error), separators=_JSON_SEPARATORS)
 
 
 def error_sse(error: object) -> str:
-    r"""Encode a stream failure as one ``data: {"error": ...}\n\n`` SSE frame.
-
-    ``to_sse`` yields this frame automatically when an active stream fails. Use
-    ``error_sse`` directly in custom adapters when setup fails before a
-    ``StreamHandle`` exists (for example, when ``action.stream(...)`` itself
-    raises inside an SSE generator).
-    """
+    r"""Encode ``error_body(error)`` as one ``data: {"error": ...}\n\n`` SSE frame."""
+    # For failures before to_sse runs, e.g. action.stream(...) raising.
     return _frame('error', error_body(error))
 
 
