@@ -90,15 +90,18 @@ Example:
 from genkit._core._context import ContextProvider, RequestData
 from genkit._core._error import error_body, error_status
 from genkit._core._web import read_body, wants_stream
-from genkit.web._sse import StreamHandle, to_sse
+from genkit.web._sse import StreamHandle, error_json, error_sse, result_json, to_sse
 
 __all__ = [
     'ContextProvider',
     'RequestData',
     'StreamHandle',
     'error_body',
+    'error_json',
+    'error_sse',
     'error_status',
     'read_body',
+    'result_json',
     'to_sse',
     'wants_stream',
 ]

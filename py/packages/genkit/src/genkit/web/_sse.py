@@ -67,6 +67,23 @@ def _frame(key: str, value: object) -> str:
     return f'data: {json.dumps({key: value}, separators=_JSON_SEPARATORS)}\n\n'
 
 
+def result_json(result: object) -> str:
+    """Encode a one-shot result as compact ``{"result": ...}`` JSON, the bytes every adapter sends."""
+    # Same encoding as to_sse frames: aliases, no null model fields.
+    return json.dumps({'result': _frame_value(result)}, separators=_JSON_SEPARATORS)
+
+
+def error_json(error: Exception) -> str:
+    """Encode ``error_body(error)`` as compact JSON; pair with ``error_status(error)``."""
+    return json.dumps(error_body(error), separators=_JSON_SEPARATORS)
+
+
+def error_sse(error: Exception) -> str:
+    r"""Encode ``error_body(error)`` as one ``data: {"error": ...}\n\n`` SSE frame."""
+    # For failures before to_sse runs, e.g. action.stream(...) raising.
+    return _frame('error', error_body(error))
+
+
 async def to_sse(handle: StreamHandle) -> AsyncIterator[str]:
     r"""Frame a streaming handle as Genkit SSE lines.
 
@@ -148,4 +165,4 @@ async def to_sse(handle: StreamHandle) -> AsyncIterator[str]:
             _logger.exception('served stream failed')
         else:
             _logger.warning('served stream failed: %s', e)
-        yield _frame('error', error_body(e))
+        yield error_sse(e)
