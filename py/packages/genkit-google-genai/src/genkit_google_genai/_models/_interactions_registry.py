@@ -102,7 +102,7 @@ ANTIGRAVITY_INFO = ModelInfo(
 )
 
 KNOWN_ANTIGRAVITY_MODELS: dict[str, ModelInfo] = {
-    'antigravity-preview-05-2026': ANTIGRAVITY_INFO,
+    'antigravity-preview-09-2026': ANTIGRAVITY_INFO,
 }
 
 
