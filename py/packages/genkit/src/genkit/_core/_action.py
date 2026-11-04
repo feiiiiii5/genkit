@@ -233,9 +233,12 @@ class StreamResponse(Generic[ChunkT_co, OutputT_co]):
     - If the run raises, both the loop and ``.response`` raise it.
       ``ModelStreamResponse`` (``generate_stream``, ``prompt.stream``) reports
       model failures on ``.response`` instead; see its docstring.
-    - Leaving an ``async for`` early (``break``, an exception, or a cancel) stops
-      the run, and ``.response`` raises ``GenkitError`` with status ``CANCELLED``.
-      Reading to the end doesn't. See ``Action.stream``.
+    - Leaving ``async for chunk in result:`` early (``break``, an exception, or
+      a cancel) stops the run, and ``.response`` raises ``GenkitError`` with
+      status ``CANCELLED`` (``ModelStreamResponse`` resolves with
+      ``finish_reason == ABORTED`` instead). Reading to the end doesn't.
+      To pull individual chunks without opening a scoped loop, read from
+      ``result.stream`` (``await anext(result.stream)``). See ``Action.stream``.
 
     Example:
         ```python
@@ -268,7 +271,12 @@ class StreamResponse(Generic[ChunkT_co, OutputT_co]):
 
     @property
     def stream(self) -> StoppableStream[ChunkT_co]:
-        """The chunks, in order. Iterating the response itself reads the same stream."""
+        """The underlying ``AsyncIterator`` of chunks (``aiter(r.stream) is r.stream``).
+
+        Pulling chunks via ``await anext(r.stream)`` (or ``anext(aiter(r.stream))``)
+        leaves the run going; close explicitly with ``await r.stream.aclose()`` or
+        ``contextlib.aclosing(r.stream)``.
+        """
         return self._stream
 
     @property
@@ -277,8 +285,9 @@ class StreamResponse(Generic[ChunkT_co, OutputT_co]):
         return self._response
 
     def __aiter__(self) -> AsyncGenerator[ChunkT_co, None]:
-        # `async for chunk in result` reads `.stream`, so callers can skip the hop.
-        return self._stream.__aiter__()
+        # Scoped async generator so leaving `async for chunk in result:` early
+        # closes the generator and stops the run via `self._stream.aclose()`.
+        return self._stream.scoped_loop()
 
     async def aclose(self) -> None:
         """Close the stream and release any underlying resources."""
@@ -1287,17 +1296,19 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
     ) -> StreamResponse[ChunkT, OutputT]:
         """Run the action and return a StreamResponse to read its chunks and result.
 
-        Iterate it (or its ``.stream``) for chunks and await ``.response`` for the
-        output. Leaving the ``async for`` early, by ``break``, an exception, or
-        cancelling the task that's reading, cancels the run, and ``.response``
-        then raises ``GenkitError`` with status ``CANCELLED``. After a plain
-        ``break`` the cancel lands a loop tick or two later, when Python closes
-        the abandoned iterator; wrap it in ``contextlib.aclosing(...)`` to stop
-        the run right as the block exits.
+        Iterate the ``StreamResponse`` for chunks and await ``.response`` for the
+        output. Leaving ``async for chunk in response:`` early—by ``break``, an
+        exception, or cancelling the reading task—cancels the run, and
+        ``.response`` then raises ``GenkitError`` with status ``CANCELLED``.
+        After a plain ``break`` the cancel lands once Python finalizes the
+        abandoned generator; use ``async with my_flow.stream(x) as stream:``
+        (or ``contextlib.aclosing(stream.stream)``) to stop the run before the
+        block exits. Reading directly from ``.stream`` (``StoppableStream``) via
+        ``anext()`` pulls chunks without auto-closing on its own.
 
         Example:
-            async with contextlib.aclosing(my_flow.stream(x).stream) as chunks:
-                async for chunk in chunks:
+            async with my_flow.stream(x) as stream:
+                async for chunk in stream:
                     if done_with(chunk):
                         break
         """

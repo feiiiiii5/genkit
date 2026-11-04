@@ -121,6 +121,61 @@ async def test_generate_cancel_awaits_tool_async_finally_cleanup_before_unwindin
 
 
 @pytest.mark.asyncio
+async def test_generate_cancel_with_multiple_tools_awaits_every_tool_async_finally_cleanup() -> None:
+    """With 2+ parallel tools, a single task.cancel() cancels each tool once and lets finally blocks finish."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    seat_locked = asyncio.Event()
+    baggage_locked = asyncio.Event()
+    cleaned: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def hold_resource(label: str, ready: asyncio.Event) -> AsyncIterator[None]:
+        ready.set()
+        try:
+            yield
+        finally:
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            cleaned.append(label)
+
+    @ai.tool(name='lock_seat')
+    async def lock_seat() -> str:
+        async with hold_resource('seat', seat_locked):
+            await asyncio.sleep(10)
+        return '12A'
+
+    @ai.tool(name='hold_baggage')
+    async def hold_baggage() -> str:
+        async with hold_resource('baggage', baggage_locked):
+            await asyncio.sleep(10)
+        return 'checked-1'
+
+    pm.responses = [
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(
+                role=Role.MODEL,
+                content=[
+                    Part(tool_request=ToolRequest(name='lock_seat', input={}, ref='r1')),
+                    Part(tool_request=ToolRequest(name='hold_baggage', input={}, ref='r2')),
+                ],
+            ),
+        )
+    ]
+
+    gen_task = asyncio.create_task(ai.generate(prompt='Book flight with bag', tools=['lock_seat', 'hold_baggage']))
+    await asyncio.gather(seat_locked.wait(), baggage_locked.wait())
+    gen_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await gen_task
+
+    assert sorted(cleaned) == ['baggage', 'seat']
+    assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_request_cancel_retrieves_teardown_exception_without_loop_error() -> None:
     """An exception raised inside a cancelled tool's finally block is retrieved and never leaked to the event loop."""
     loop = asyncio.get_running_loop()

@@ -2512,10 +2512,12 @@ async def gather_turn(
                 t.cancel()
 
     try:
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
-        for t in tasks:
-            if t.done():
-                _ = t.result()
+        pending: set[asyncio.Future[T]] = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for t in tasks:
+                if t in done:
+                    _ = t.result()
         return [t.result() for t in tasks]
     except BaseException:
         cancel_pending()

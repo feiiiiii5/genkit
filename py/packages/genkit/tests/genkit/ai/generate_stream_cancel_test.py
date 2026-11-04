@@ -238,6 +238,41 @@ async def test_generate_stream_reading_one_chunk_via_stream_then_iterating_gets_
 
 
 @pytest.mark.asyncio
+async def test_generate_stream_anext_aiter_on_stoppable_stream_keeps_model_running() -> None:
+    """`s.stream` is a true AsyncIterator (`aiter(s.stream) is s.stream`), so `anext(aiter(s.stream))` does not stop."""
+    ai, model = setup(release=True)
+
+    s = ai.generate_stream(model='slow', prompt='hi')
+    assert aiter(s.stream) is s.stream
+    first = await settle(anext(aiter(s.stream)))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    rest = [chunk.text async for chunk in s]
+    response = await settle(s.response)
+
+    assert first.text == 'one '
+    assert rest == ['two ']
+    assert not model.cancelled.is_set()
+    assert response.finish_reason == FinishReason.STOP
+    assert response.text == 'one two'
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_async_with_read_to_end_completes_normally() -> None:
+    """Exiting `async with ai.generate_stream(...)` after reading to the end preserves FinishReason.STOP."""
+    ai, model = setup(release=True)
+
+    async with ai.generate_stream(model='slow', prompt='hi') as s:
+        seen = [chunk.text async for chunk in s]
+    response = await settle(s.response)
+
+    assert seen == ['one ', 'two ']
+    assert not model.cancelled.is_set()
+    assert response.finish_reason == FinishReason.STOP
+    assert response.text == 'one two'
+
+
+@pytest.mark.asyncio
 async def test_generate_stream_model_fails_midway_ends_loop_and_response_is_failed() -> None:
     """A model that raises after one chunk ends the `async for` normally; `.response` is FAILED."""
     ai, _ = setup(fail_midway=True)
