@@ -38,7 +38,8 @@ export function defineRuntimeTools(server: McpServer, options: McpToolOptions) {
         {command: "uv", args: ["run", "python", "main.py"]}
         {command: "go", args: ["run", "."]}
         {command: "dart", args: ["run", "bin/main.dart"]}
-        {command: "npm", args: ["run", "dev"]}`,
+        {command: "npm", args: ["run", "dev"]}
+        {command: "npm", args: ["run", "dev"], projectRoot: "path/to/project"}`,
       inputSchema: getCommonSchema(options.explicitProjectRoot, {
         command: z.string().describe('The command to run; type: string'),
         args: z

@@ -87,7 +87,7 @@ export function defineFlowTools(server: McpServer, options: McpToolOptions) {
         input: z
           .string()
           .describe(
-            'Flow input serialized as a valid JSON string (passed to `JSON.parse`, e.g. `"\\"ORD-1042\\""` for a string input or `"{\\"key\\":\\"value\\"}"` for an object input). Must conform to the flow inputSchema; type: string.'
+            'Flow input serialized as a valid JSON string (passed to `JSON.parse`, e.g. \'"ORD-1042"\' for a string input or \'{"key":"value"}\' for an object input). Must conform to the flow inputSchema; type: string.'
           )
           .optional(),
       }),
