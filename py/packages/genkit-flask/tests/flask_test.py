@@ -21,11 +21,14 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Any
+import warnings
+from collections.abc import AsyncIterator, Generator
+from typing import Any, cast
 
 import pytest
 from flask import Flask, abort
 from genkit_flask import genkit_flask_handler
+from genkit_flask._handler import _iter_over_async
 from pydantic import BaseModel
 
 from genkit import FlowContext, Genkit, GenkitError, PublicError
@@ -493,6 +496,23 @@ def test_flask_streaming_client_disconnect_cancels_flow() -> None:
     assert first == b'data: {"message":1}\n\n'
     assert flow_cancelled.is_set()
     assert cleanup_finished.is_set()
+
+
+def test_flask_iter_over_async_skips_aclose_when_loop_closed() -> None:
+    """Closing `_iter_over_async` after `loop.close()` does not raise `RuntimeError` or leak an unawaited coroutine."""
+    loop = asyncio.new_event_loop()
+
+    async def source() -> AsyncIterator[str]:
+        yield 'first'
+        yield 'second'
+
+    sync_iter = cast(Generator[str, None, None], _iter_over_async(source(), loop))
+    assert next(sync_iter) == 'first'
+    loop.close()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', RuntimeWarning)
+        sync_iter.close()
 
 
 def test_flask_failure_logs_name_the_flow(caplog: pytest.LogCaptureFixture) -> None:

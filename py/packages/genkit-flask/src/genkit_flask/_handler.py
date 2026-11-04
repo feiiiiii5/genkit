@@ -110,7 +110,7 @@ def _iter_over_async(ait: AsyncIterable[T], loop: AbstractEventLoop) -> Iterable
         # only runs while we drive the loop, so close it here or the flow never
         # hears about it.
         aclose = getattr(ait_iter, 'aclose', None)
-        if aclose is not None:
+        if aclose is not None and not loop.is_closed():
             loop.run_until_complete(aclose())
 
 
