@@ -49,6 +49,6 @@
     "bun-types": "^1.4.4",
     "genversion": "^3.2.0",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.12"
   }
 }
