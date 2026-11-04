@@ -174,7 +174,7 @@ class ModelStreamResponse(StreamResponse[ModelResponseChunk[OutputT], ModelRespo
     Example:
         ```python
         result = ai.generate_stream(prompt='Describe miso soup in one line.')
-        async for chunk in result:
+        async for chunk in result.stream:
             print(chunk.text)
         # => Savory soybean broth
         #    with tofu and scallions.
@@ -494,8 +494,8 @@ class Prompt(Generic[InputT, OutputT]):
     ) -> ModelStreamResponse[OutputT]:
         """Stream the prompt execution. Same keywords as ``__call__``, minus ``on_chunk``.
 
-        Iterate the returned stream for chunks; there's no callback here so
-        chunks only arrive one way.
+        Iterate ``.stream`` on the returned response for chunks; there's no
+        callback here so chunks only arrive one way.
         """
         opts = PromptGenerateOptions(
             model=model,

@@ -250,7 +250,7 @@ class StreamResponse(Generic[ChunkT_co, OutputT_co]):
 
 
         result = track_order.stream('A-1042')
-        async for update in result:
+        async for update in result.stream:
             print(update)
         # => Out for delivery
 
@@ -1268,7 +1268,7 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
         telemetry_labels: dict[str, object] | None = None,
         init: InitT | None = None,
     ) -> StreamResponse[ChunkT, OutputT]:
-        """Start the action and return a ``StreamResponse``: iterate it for chunks, await ``.response`` for the result.
+        """Return a ``StreamResponse``: iterate ``.stream`` for chunks, await ``.response`` for the result.
 
         Takes the same keyword arguments as ``run``, minus ``on_chunk``. If the
         action raises, both the loop and ``.response`` raise.
@@ -1291,17 +1291,17 @@ class Action(Generic[InputT, OutputT, ChunkT, InitT]):
     ) -> StreamResponse[ChunkT, OutputT]:
         """Run the action and return a StreamResponse to read its chunks and result.
 
-        Iterate it (or its ``.stream``) for chunks and await ``.response`` for the
-        output. Closing early via ``async with my_flow.stream(x) as stream:`` (or
-        ``await stream.aclose()`` / ``contextlib.aclosing(stream.stream)``) cancels
+        Iterate ``.stream`` for chunks and await ``.response`` for the output.
+        Closing early via ``async with my_flow.stream(x) as res:`` (or
+        ``await res.aclose()`` / ``contextlib.aclosing(res.stream)``) cancels
         the run and awaits ``finally:`` cleanup, and ``.response`` then raises
         ``GenkitError`` with status ``CANCELLED``. Python does not tear down an
         ``AsyncIterator`` on ``break`` alone, so wrap the stream in ``async with``
         when exiting early should cancel the action.
 
         Example:
-            async with my_flow.stream(x) as stream:
-                async for chunk in stream:
+            async with my_flow.stream(x) as res:
+                async for chunk in res.stream:
                     if done_with(chunk):
                         break
         """
