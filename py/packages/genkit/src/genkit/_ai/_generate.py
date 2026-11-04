@@ -757,8 +757,8 @@ def start_generate_stream(
 ) -> tuple[StoppableStream[ModelResponseChunk[StreamOutT]], asyncio.Task[ModelResponse[StreamOutT]]]:
     """Start a streaming generate task whose stop callback cancels in-flight I/O.
 
-    When the stream consumer exits early (``break``, consumer exception, or
-    ``await stream.aclose()``), ``stop_model`` sets ``caller_stopped`` and
+    When the stream is closed early (``async with``, ``await stream.aclose()``,
+    or ``contextlib.aclosing``), ``stop_model`` sets ``caller_stopped`` and
     cancels ``task`` so in-flight model or tool awaits wake immediately via
     ``asyncio.CancelledError``, while ``.response`` still resolves to a boxed
     ``ModelResponse(finish_reason=FinishReason.ABORTED)``. An external

@@ -446,7 +446,7 @@ async def test_fallback_halts_when_task_cancelled() -> None:
 
 @pytest.mark.asyncio
 async def test_fallback_generate_stream_break_halts_subsequent_models() -> None:
-    """Breaking out of `ai.generate_stream(..., use=[Fallback(...)])` cancels backup1 and never calls backup2."""
+    """Exiting `async with ai.generate_stream(..., use=[Fallback(...)])` cancels backup1 and never calls backup2."""
     ai = Genkit()
     ran: list[str] = []
     backup1_cancelled = asyncio.Event()
@@ -479,11 +479,15 @@ async def test_fallback_generate_stream_break_halts_subsequent_models() -> None:
     ai.define_model(name='backup1', fn=backup1)
     ai.define_model(name='backup2', fn=backup2)
 
-    stream = ai.generate_stream(model='primary', prompt='hi', use=[Fallback(models=['backup1', 'backup2'])])
     seen: list[str] = []
-    async for chunk in stream:
-        seen.append(chunk.text)
-        break
+    async with ai.generate_stream(
+        model='primary',
+        prompt='hi',
+        use=[Fallback(models=['backup1', 'backup2'])],
+    ) as stream:
+        async for chunk in stream:
+            seen.append(chunk.text)
+            break
     final = await asyncio.wait_for(stream.response, timeout=2.0)
 
     assert seen == ['backup1-chunk']

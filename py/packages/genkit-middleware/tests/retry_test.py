@@ -525,7 +525,7 @@ async def test_retry_backoff_wait_ends_when_task_cancelled(ctx: MiddlewareContex
 
 @pytest.mark.asyncio
 async def test_retry_generate_stream_break_during_backoff_stops_immediately() -> None:
-    """Breaking out of `ai.generate_stream(..., use=[Retry(...)])` during a 30s backoff aborts right away."""
+    """Exiting `async with ai.generate_stream(..., use=[Retry(...)])` during a 30s backoff aborts right away."""
     ai = Genkit()
     first_failed = asyncio.Event()
     call_count = 0
@@ -540,17 +540,17 @@ async def test_retry_generate_stream_break_during_backoff_stops_immediately() ->
     ai.define_model(name='flaky', fn=flaky)
 
     started = time.monotonic()
-    stream = ai.generate_stream(
+    seen: list[str] = []
+    async with ai.generate_stream(
         model='flaky',
         prompt='hi',
         use=[Retry(max_retries=3, initial_delay_ms=30_000, no_jitter=True)],
-    )
-    seen: list[str] = []
-    async for chunk in stream:
-        seen.append(chunk.text)
-        await asyncio.wait_for(first_failed.wait(), timeout=2.0)
-        await asyncio.sleep(0.01)
-        break
+    ) as stream:
+        async for chunk in stream:
+            seen.append(chunk.text)
+            await asyncio.wait_for(first_failed.wait(), timeout=2.0)
+            await asyncio.sleep(0.01)
+            break
 
     response = await asyncio.wait_for(stream.response, timeout=2.0)
     assert time.monotonic() - started < 2
