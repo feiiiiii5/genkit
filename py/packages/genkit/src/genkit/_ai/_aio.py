@@ -1838,7 +1838,7 @@ class Genkit:
 
         Example:
             result = ai.generate_stream(prompt='Write a haiku about rain.')
-            async for chunk in result:
+            async for chunk in result.stream:
                 print(chunk.text)
             final = await result.response
         """
