@@ -271,9 +271,9 @@ async def test_flow_stream_anext_timeout_does_not_cancel_flow() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['aclosing', 'async_with'])
+@pytest.mark.parametrize('mode', ['aclosing', 'async_with', 'async_with_stream'])
 async def test_flow_stream_aclosing_and_async_with_preserve_awaiting_finally_cleanup(mode: str) -> None:
-    """Breaking under `aclosing(stream.stream)` or `async with flow.stream(...)` lets an awaiting `finally:` finish."""
+    """Breaking under `async with` (on the handle or `.stream`) or `aclosing` lets an awaiting `finally:` finish."""
     ai = Genkit()
     cleanup_finished = False
 
@@ -293,9 +293,13 @@ async def test_flow_stream_aclosing_and_async_with_preserve_awaiting_finally_cle
         async with contextlib.aclosing(stream.stream) as chunks:
             async for _ in chunks:
                 break
-    else:
-        async with stream as chunks:
+    elif mode == 'async_with_stream':
+        async with stream.stream as chunks:
             async for _ in chunks:
+                break
+    else:
+        async with stream as res:
+            async for _ in res.stream:
                 break
 
     assert cleanup_finished is True
