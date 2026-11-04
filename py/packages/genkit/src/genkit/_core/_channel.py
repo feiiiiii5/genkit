@@ -188,8 +188,8 @@ class StoppableStream(AsyncIterator[T]):
     ``__aiter__`` returns ``self`` (``aiter(s) is s``), so reading zero chunks,
     pulling individual chunks with ``await anext(s)``, or exiting a bare
     ``async for`` without closing leaves the background run going. Closing via
-    ``async with stream:``, ``contextlib.aclosing(s)``, or ``await s.aclose()``
-    stops the run if it hasn't finished and waits for cleanup.
+    ``async with`` or ``await s.aclose()`` stops the run if it hasn't finished
+    and waits for cleanup.
     """
 
     def __init__(self, *, chunks: AsyncIterable[T], stop: Callable[[], Awaitable[None]] | None) -> None:
@@ -224,6 +224,12 @@ class StoppableStream(AsyncIterator[T]):
             await source_aclose()
         if self._stop is not None:
             await self._stop()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
 
 def run_loop(coro: Coroutine[object, object, T], *, debug: bool | None = None) -> T:
