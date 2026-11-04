@@ -2361,18 +2361,21 @@ async def gather_turn(
     *,
     watched_abort: asyncio.Event | None,
 ) -> list[T]:
-    """Run one turn's tools concurrently. If one fails, cancel and await the rest.
+    """Run one turn's tools concurrently. If one fails or cancels, cancel and await the rest.
 
     ``asyncio.gather`` raises the first failure but leaves the other tools
     running, so they would keep committing side effects after generate
-    returned. This is TaskGroup semantics on the 3.10 floor: the first
-    exception is the one raised, and no tool outlives the turn.
+    returned. It also cancels all children directly on outer cancellation
+    before ``except`` runs, which would deliver a second cancel during
+    ``finally`` cleanup. ``asyncio.wait`` avoids that so each task is
+    cancelled at most once.
 
     ``watched_abort`` is the caller's abort signal. Once it fires, every
     in-flight task is cancelled, including any ``wrap_tool`` middleware
-    around the tool. Each task is cancelled at most once: a second cancel
-    would interrupt the tool's own ``finally`` cleanup.
+    around the tool.
     """
+    if not coros:
+        return []
     tasks = [asyncio.ensure_future(c) for c in coros]
     cancelled: set[int] = set()
 
@@ -2393,12 +2396,22 @@ async def gather_turn(
         watcher_task = asyncio.create_task(watch_abort(watched_abort))
 
     try:
-        return await asyncio.gather(*tasks)
+        pending: set[asyncio.Future[T]] = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for t in tasks:
+                if t in done:
+                    _ = t.result()
+        return [t.result() for t in tasks]
     except BaseException:
         cancel_pending()
-        # return_exceptions retrieves every sibling's outcome (including a
-        # sibling's Interrupt) so none masks the original or goes unretrieved.
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # Wait via asyncio.wait (not gather) so a second outer cancel cannot
+        # propagate into tasks while their finally blocks are still cleaning up,
+        # then retrieve every sibling's outcome so none goes unretrieved.
+        await asyncio.wait(tasks)
+        for t in tasks:
+            if not t.cancelled():
+                _ = t.exception()
         raise
     finally:
         if watcher_task is not None:

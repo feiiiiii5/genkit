@@ -9951,3 +9951,112 @@ async def test_failing_restart_after_sibling_restart_completes_returns_no_unfini
     assert failed.messages == history
     assert charges == ['charged-100']
     assert reserve_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_abort_signal_cancels_wrap_tool_middleware_blocked_before_next_fn() -> None:
+    """gather_turn's abort watcher cancels wrap_tool middleware parked before next_fn reaches execute_tool_request."""
+    abort_signal = asyncio.Event()
+    mw_waiting = asyncio.Event()
+    mw_cleaned_up = False
+    tool_entered = False
+
+    class ApprovalGateMiddleware(Middleware):
+        name = 'approval_gate'
+        description = 'park before next_fn'
+
+        async def wrap_tool(
+            self,
+            params: ToolHookParams,
+            ctx: MiddlewareContext,
+            next_fn: Callable[[ToolHookParams, MiddlewareContext], Awaitable[MultipartToolResponse]],
+        ) -> MultipartToolResponse:
+            nonlocal mw_cleaned_up
+            mw_waiting.set()
+            try:
+                await asyncio.Event().wait()
+                return await next_fn(params, ctx)
+            finally:
+                await asyncio.sleep(0)
+                mw_cleaned_up = True
+
+    class GatePlugin(ExtensionPlugin):
+        middleware = [ApprovalGateMiddleware]
+
+    ai = Genkit(plugins=[GatePlugin()], model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+
+    @ai.tool(name='wire_transfer')
+    async def wire_transfer() -> str:
+        nonlocal tool_entered
+        tool_entered = True
+        return 'sent'
+
+    pm.responses = [
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(
+                role=Role.MODEL,
+                content=[Part(tool_request=ToolRequest(name='wire_transfer', ref='ref-wire', input={}))],
+            ),
+        ),
+    ]
+
+    task = asyncio.create_task(
+        generate_action(
+            CallScope(ai),
+            GenerateActionOptions(
+                model='scriptedModel',
+                messages=[Message(role=Role.USER, content=[Part.from_text('wire $500')])],
+                tools=['wire_transfer'],
+                use=[MiddlewareRef(name='approval_gate')],
+            ),
+            abort_signal=abort_signal,
+        )
+    )
+    await mw_waiting.wait()
+    abort_signal.set()
+    response = await asyncio.wait_for(task, timeout=1.0)
+
+    assert tool_entered is False
+    assert mw_cleaned_up is True
+    assert response.finish_reason == FinishReason.ABORTED
+    assert response.error is not None
+    assert response.error.status == 'CANCELLED'
+    assert [m.role for m in response.messages] == [Role.USER]
+
+
+@pytest.mark.asyncio
+async def test_generate_wait_for_timeout_preserves_cancelled_history() -> None:
+    """wait_for timeout around ai.generate raises TimeoutError with history readable via cancelled_history."""
+    ai = Genkit(model='scriptedModel')
+    pm, _ = define_scripted_model(ai)
+    cleaned_up = False
+
+    @ai.tool(name='reserve_table')
+    async def reserve_table() -> str:
+        nonlocal cleaned_up
+        try:
+            await asyncio.sleep(10)
+        finally:
+            await asyncio.sleep(0)
+            cleaned_up = True
+        return 'table-7'
+
+    pm.responses = [
+        ModelResponse(
+            finish_reason=FinishReason.STOP,
+            message=Message(
+                role=Role.MODEL,
+                content=[Part(tool_request=ToolRequest(name='reserve_table', ref='ref-reserve', input={}))],
+            ),
+        ),
+    ]
+
+    with pytest.raises((TimeoutError, asyncio.TimeoutError)) as exc_info:
+        await asyncio.wait_for(ai.generate(prompt='book dinner', tools=['reserve_table']), timeout=0.03)
+
+    assert cleaned_up is True
+    found = cancelled_history(exc_info.value)
+    assert found is not None
+    assert [m.role for m in found] == [Role.USER]

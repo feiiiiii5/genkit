@@ -42,16 +42,22 @@ def cancelled_history(exc: BaseException) -> 'list[Message] | None':
 
     On a foreign cancel, generate sets ``messages`` on the ``CancelledError``
     it re-raises: the history up to the last completed round, with no
-    partial turn. On 3.11+ awaiting the cancelled task re-raises that same
-    object. On 3.10 it raises a fresh ``CancelledError`` and the original
-    is its ``__context__``, once per task hop, so walk the chain.
+    partial turn.
 
-    Drop the walk when 3.10 support ends.
+    - Direct ``task.cancel()`` on 3.11+ re-raises that same ``CancelledError``.
+    - ``asyncio.wait_for`` and ``asyncio.timeout`` raise ``TimeoutError``
+      (``asyncio.TimeoutError`` on 3.10) with the ``CancelledError`` on
+      ``__cause__``.
+    - On 3.10, each task hop raises a fresh ``CancelledError`` with the
+      previous one on ``__context__``.
     """
     cur: BaseException | None = exc
     seen: set[int] = set()
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
+        if isinstance(cur, (TimeoutError, asyncio.TimeoutError)):
+            cur = cur.__cause__
+            continue
         if isinstance(cur, asyncio.CancelledError) and 'messages' in cur.__dict__:
             return cur.__dict__['messages']
         if sys.version_info >= (3, 11):
