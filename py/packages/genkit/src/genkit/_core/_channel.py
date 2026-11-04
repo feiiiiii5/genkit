@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine
 from typing import Any, Generic, TypeVar
 
 from typing_extensions import Self, TypeVar as TypeVarExt, override
@@ -185,11 +185,11 @@ def mirror_result(task: asyncio.Future[_ResultT], pick: Callable[[_ResultT], _Pi
 class StoppableStream(AsyncIterator[T]):
     """Single-pass ``AsyncIterator`` over a run's chunks, with explicit ``aclose()``.
 
-    ``__aiter__`` returns ``self`` (preserving ``aiter(s) is s``), so pulling
-    individual chunks via ``await anext(s)`` or ``await anext(aiter(s))`` never
-    stops the run on its own. Callers wanting scoped early-exit cancellation
-    use ``StreamResponse`` (which iterates ``scoped_loop()``), ``async with``,
-    ``contextlib.aclosing(s)``, or ``await s.aclose()``.
+    ``__aiter__`` returns ``self`` (``aiter(s) is s``), so reading zero chunks,
+    pulling individual chunks with ``await anext(s)``, or exiting a bare
+    ``async for`` without closing leaves the background run going. Closing via
+    ``async with stream:``, ``contextlib.aclosing(s)``, or ``await s.aclose()``
+    stops the run if it hasn't finished and waits for cleanup.
     """
 
     def __init__(self, *, chunks: AsyncIterable[T], stop: Callable[[], Awaitable[None]] | None) -> None:
@@ -224,21 +224,6 @@ class StoppableStream(AsyncIterator[T]):
             await source_aclose()
         if self._stop is not None:
             await self._stop()
-
-    async def scoped_loop(self) -> AsyncGenerator[T, None]:
-        """Yield remaining chunks and call ``aclose()`` if exited before exhaustion."""
-        finished = False
-        try:
-            while True:
-                try:
-                    chunk = await self.__anext__()
-                except StopAsyncIteration:
-                    finished = True
-                    return
-                yield chunk
-        finally:
-            if not finished:
-                await self.aclose()
 
 
 def run_loop(coro: Coroutine[object, object, T], *, debug: bool | None = None) -> T:
