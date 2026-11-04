@@ -31,12 +31,12 @@ export function defineTraceTools(server: McpServer, options: McpToolOptions) {
     {
       title: 'Get Genkit Trace',
       description:
-        'Retrieves the detailed Genkit execution trace (spans, inputs, outputs, and errors) for a flow or action run by its `traceId`.',
+        'Retrieves the full Genkit execution trace for a `traceId` returned by `run_flow`, including every span (flow, model generation, and `/tool/...` calls) with its exact `genkit:input`, `genkit:output`, and error status. Use this to debug why a flow or tool call failed or produced unexpected output.',
       inputSchema: getCommonSchema(options.explicitProjectRoot, {
         traceId: z
           .string()
           .describe(
-            'trace id (typically returned after running a flow or other actions); type: string'
+            'trace id (typically returned in `telemetry.traceId` after calling `run_flow`); type: string'
           ),
       }),
     },

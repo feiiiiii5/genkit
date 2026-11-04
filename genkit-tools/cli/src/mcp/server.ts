@@ -40,11 +40,18 @@ export async function startMcpServer(params: {
       version: '0.0.2',
       title: 'Genkit MCP Server',
       description:
-        'Provides Genkit documentation, runtime process management, flow discovery/execution, and execution trace inspection.',
+        'Provides Genkit documentation lookup, runtime process management, flow discovery/execution, and execution trace inspection.',
     },
     {
-      instructions:
-        'Use this server to look up Genkit documentation (`search_genkit_docs`, `list_genkit_docs`, `read_genkit_docs`), manage the local Genkit runtime (`start_runtime`, `restart_runtime`, `kill_runtime`), discover and run Genkit flows (`list_flows`, `run_flow`), and inspect execution traces (`get_trace`). Always search Genkit docs before implementing Genkit features.',
+      instructions: [
+        'Use the Genkit MCP server whenever authoring, running, or debugging a Genkit project:',
+        '1. Documentation (`list_genkit_docs`, `search_genkit_docs`, `read_genkit_docs`): Search and read official Genkit documentation before implementing or modifying Genkit features.',
+        '2. Running & Debugging Flows (`start_runtime`, `list_flows`, `run_flow`, `get_trace`, `restart_runtime`, `kill_runtime`): Prefer these MCP tools over ad-hoc shell scripts when executing or troubleshooting Genkit flows and tools:',
+        '   - Call `start_runtime` first with the app entry point (e.g. `{ command: "npx", args: ["tsx", "src/index.ts"] }`, `{ command: "uv", args: ["run", "python", "main.py"] }`, `{ command: "go", args: ["run", "."] }`, or `{ command: "dart", args: ["run", "bin/main.dart"] }`).',
+        '   - Call `list_flows` to inspect registered flows and their input schemas, then call `run_flow` to execute a flow and obtain its `result` and `telemetry.traceId`.',
+        '   - Call `get_trace` with that `traceId` to inspect the full execution trace, including every tool call input/output, model request/response, and span error.',
+        '   - After editing code, call `restart_runtime` so changes take effect before re-running `run_flow`, and call `kill_runtime` when finished.',
+      ].join('\n'),
     }
   );
 

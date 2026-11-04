@@ -31,18 +31,20 @@ export function defineRuntimeTools(server: McpServer, options: McpToolOptions) {
     'start_runtime',
     {
       title: 'Starts a Genkit runtime process',
-      description: `Use this to start a Genkit runtime process (This is typically the entry point to the users app). Once started, the runtime will be picked up by the \`genkit start\` command to power the Dev UI features like model and flow playgrounds. The inputSchema for this tool matches the function prototype for \`NodeJS.child_process.spawn\`.
-        
-      Examples: 
-        {command: "go", args: ["run", "main.go"]}
-        {command: "npm", args: ["run", "dev"]}
-        {command: "npm", args: ["run", "dev"], projectRoot: "path/to/project"}`,
+      description: `Use this to start the project's Genkit runtime process and local telemetry server so you can discover flows, execute them, and inspect traces via \`list_flows\`, \`run_flow\`, and \`get_trace\`. Prefer this MCP workflow (\`start_runtime\` -> \`list_flows\` -> \`run_flow\` -> \`get_trace\` -> \`restart_runtime\` -> \`kill_runtime\`) over running ad-hoc shell scripts when executing or debugging Genkit flows and tools. Call \`start_runtime\` before calling \`list_flows\` or \`run_flow\`. The inputSchema matches \`NodeJS.child_process.spawn\`.
+
+      Examples:
+        {command: "npx", args: ["tsx", "src/index.ts"]}
+        {command: "uv", args: ["run", "python", "main.py"]}
+        {command: "go", args: ["run", "."]}
+        {command: "dart", args: ["run", "bin/main.dart"]}
+        {command: "npm", args: ["run", "dev"]}`,
       inputSchema: getCommonSchema(options.explicitProjectRoot, {
         command: z.string().describe('The command to run; type: string'),
         args: z
           .array(z.string())
           .describe(
-            'The array of string args for the command to run. Eg: `["run", "dev"]`; type: string[].'
+            'The array of string args for the command to run. Eg: `["tsx", "src/index.ts"]`; type: string[].'
           ),
       }),
     },
@@ -89,13 +91,14 @@ export function defineRuntimeTools(server: McpServer, options: McpToolOptions) {
   const registerControlTool = (
     name: string,
     title: string,
-    action: 'kill' | 'restart'
+    action: 'kill' | 'restart',
+    description: string
   ) => {
     server.registerTool(
       name,
       {
         title,
-        description: `Use this to ${action} an existing runtime that was started using the \`start_runtime\` tool`,
+        description,
         inputSchema: getCommonSchema(options.explicitProjectRoot),
       },
       async (opts) => {
@@ -157,11 +160,13 @@ export function defineRuntimeTools(server: McpServer, options: McpToolOptions) {
   registerControlTool(
     'kill_runtime',
     'Kills any existing Genkit runtime process',
-    'kill'
+    'kill',
+    'Use this to stop and clean up an existing runtime that was started using the `start_runtime` tool.'
   );
   registerControlTool(
     'restart_runtime',
     'Restarts any existing Genkit runtime process',
-    'restart'
+    'restart',
+    'Use this to restart an existing runtime started with `start_runtime`. Call this after editing source files when the runtime command (such as `npx tsx src/index.ts` or `go run .`) does not automatically hot-reload, before calling `run_flow` again.'
   );
 }

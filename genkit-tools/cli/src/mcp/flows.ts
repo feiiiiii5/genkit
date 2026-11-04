@@ -31,7 +31,7 @@ export function defineFlowTools(server: McpServer, options: McpToolOptions) {
     {
       title: 'List Genkit Flows',
       description:
-        'Use this to discover available Genkit flows or inspect the input schema of Genkit flows to know how to successfully call them.',
+        'Use this to discover available Genkit flows and inspect their input schemas before calling `run_flow` (requires a running Genkit runtime; call `start_runtime` first if none is running).',
       inputSchema: getCommonSchema(options.explicitProjectRoot),
     },
     async (opts) => {
@@ -80,13 +80,14 @@ export function defineFlowTools(server: McpServer, options: McpToolOptions) {
     'run_flow',
     {
       title: 'Run Flow',
-      description: 'Executes a Genkit flow with the provided JSON input.',
+      description:
+        'Executes a Genkit flow with the provided JSON-encoded input (call `start_runtime` first if no runtime is running; prefer this over invoking flows via shell commands). Returns the flow `result` and `telemetry.traceId`—pass `traceId` to `get_trace` to inspect tool calls, model spans, and errors.',
       inputSchema: getCommonSchema(options.explicitProjectRoot, {
         flowName: z.string().describe('name of the flow; type: string'),
         input: z
           .string()
           .describe(
-            'Flow input as JSON object encoded as string (it will be passed through `JSON.parse`). Must conform to the schema; type: string.'
+            'Flow input serialized as a valid JSON string (passed to `JSON.parse`, e.g. `"\\"ORD-1042\\""` for a string input or `"{\\"key\\":\\"value\\"}"` for an object input). Must conform to the flow inputSchema; type: string.'
           )
           .optional(),
       }),
