@@ -302,3 +302,34 @@ async def test_await_unchained_same_tick_cancel_propagates_across_multiple_hops(
         await outer
 
     assert hop_cancels != []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_history_reads_stamp_from_wait_for_and_timeout() -> None:
+    """wait_for and asyncio.timeout raise TimeoutError with the stamped CancelledError on __cause__."""
+    history = _order_history()
+
+    async def reserve() -> None:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError as exc:
+            stamp_cancelled_error(exc=exc, messages=history)
+            raise
+
+    with pytest.raises((TimeoutError, asyncio.TimeoutError)) as wait_for_exc:
+        await asyncio.wait_for(reserve(), timeout=0.01)
+
+    found = cancelled_history(wait_for_exc.value)
+    assert found is not None
+    assert [m.text for m in found] == ['book dinner for 2']
+
+    if sys.version_info >= (3, 11):
+        with pytest.raises(TimeoutError) as timeout_exc:
+            async with asyncio.timeout(0.01):
+                await reserve()
+
+        found_timeout = cancelled_history(timeout_exc.value)
+        assert found_timeout is not None
+        assert [m.text for m in found_timeout] == ['book dinner for 2']
+
+    assert cancelled_history(TimeoutError('unrelated socket timeout')) is None
