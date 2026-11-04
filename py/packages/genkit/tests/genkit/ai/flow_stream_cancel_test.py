@@ -75,7 +75,12 @@ async def test_flow_stream_accessing_stream_twice_returns_the_same_reader() -> N
     s = count.stream(1)
     first = s.stream
     assert s.stream is first
-    chunks = [await settle(s.stream.__anext__()), await settle(s.stream.__anext__())]
+    assert aiter(s.stream) is first
+    c1 = await settle(anext(aiter(s.stream)))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    c2 = await settle(anext(s.stream))
+    chunks = [c1, c2]
 
     assert chunks == [1, 2]
     assert await settle(s.response) == 'done'
