@@ -69,13 +69,19 @@ async def test_async_for_over_flow_stream_yields_chunks_directly() -> None:
 
 @pytest.mark.asyncio
 async def test_flow_stream_accessing_stream_twice_returns_the_same_reader() -> None:
-    """Touching `s.stream` again returns the same reader, so two `s.stream.__anext__()` calls get 1 then 2."""
+    """`aiter(s)` and `s.stream` return the same `AsyncIterator`, so two `anext()` calls get 1 then 2."""
     count, body = setup(release=True)
 
     s = count.stream(1)
     first = s.stream
     assert s.stream is first
-    chunks = [await settle(s.stream.__anext__()), await settle(s.stream.__anext__())]
+    assert aiter(s) is first
+    assert aiter(s.stream) is first
+    c1 = await settle(anext(aiter(s)))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    c2 = await settle(anext(s.stream))
+    chunks = [c1, c2]
 
     assert chunks == [1, 2]
     assert await settle(s.response) == 'done'
@@ -83,15 +89,15 @@ async def test_flow_stream_accessing_stream_twice_returns_the_same_reader() -> N
 
 
 @pytest.mark.asyncio
-async def test_flow_stream_break_after_first_chunk_cancels_flow_and_response_raises_cancelled() -> None:
-    """`break` after the first chunk of `my_flow.stream(x)` cancels the flow; `.response` raises CANCELLED."""
+async def test_flow_stream_async_with_break_cancels_flow_and_response_raises_cancelled() -> None:
+    """Exiting `async with my_flow.stream(x):` early cancels the flow; `.response` raises CANCELLED."""
     count, body = setup()
 
-    stream = count.stream(1)
     seen = []
-    async for chunk in stream:
-        seen.append(chunk)
-        break
+    async with count.stream(1) as stream:
+        async for chunk in stream:
+            seen.append(chunk)
+            break
     with pytest.raises(GenkitError) as err:
         await settle(stream.response)
 
@@ -101,15 +107,34 @@ async def test_flow_stream_break_after_first_chunk_cancels_flow_and_response_rai
 
 
 @pytest.mark.asyncio
-async def test_flow_stream_consumer_task_cancelled_cancels_flow() -> None:
-    """Cancelling the task iterating `my_flow.stream(x)` cancels the flow; `.response` raises CANCELLED."""
+async def test_flow_stream_bare_break_without_async_with_keeps_flow_running() -> None:
+    """Bare `break` without `async with` or `aclose()` leaves the background flow running to completion."""
+    count, body = setup(release=True)
+
+    stream = count.stream(1)
+    seen = []
+    async for chunk in stream:
+        seen.append(chunk)
+        break
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert seen == [1]
+    assert await settle(stream.response) == 'done'
+    assert not body.cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_flow_stream_consumer_task_cancelled_under_async_with_cancels_flow() -> None:
+    """Cancelling the task reading `async with my_flow.stream(x):` cancels the flow; `.response` raises CANCELLED."""
     count, body = setup()
     stream = count.stream(1)
     first_chunk = asyncio.Event()
 
     async def read() -> None:
-        async for _ in stream:
-            first_chunk.set()
+        async with stream:
+            async for _ in stream:
+                first_chunk.set()
 
     reader = asyncio.create_task(read())
     await settle(first_chunk.wait())
@@ -162,14 +187,15 @@ async def test_flow_stream_await_response_without_iterating_runs_to_completion()
 
 
 @pytest.mark.asyncio
-async def test_flow_stream_consumer_exception_cancels_flow() -> None:
-    """An unhandled exception in consumer loop body drops the iterator and cancels the flow."""
+async def test_flow_stream_consumer_exception_under_async_with_cancels_flow() -> None:
+    """An unhandled exception inside `async with my_flow.stream(x):` closes the stream and cancels the flow."""
     count, body = setup()
     stream = count.stream(1)
 
     with pytest.raises(RuntimeError, match='consumer crash'):
-        async for _ in stream:
-            raise RuntimeError('consumer crash')
+        async with stream:
+            async for _ in stream:
+                raise RuntimeError('consumer crash')
 
     with pytest.raises(GenkitError) as err:
         await settle(stream.response)
@@ -179,14 +205,15 @@ async def test_flow_stream_consumer_exception_cancels_flow() -> None:
 
 
 @pytest.mark.asyncio
-async def test_flow_stream_timeout_cancels_flow() -> None:
-    """A `wait_for` deadline on the reader cancels it and cancels the flow."""
+async def test_flow_stream_timeout_under_async_with_cancels_flow() -> None:
+    """A `wait_for` deadline on a task inside `async with my_flow.stream(x):` cancels the flow."""
     count, body = setup()
     stream = count.stream(1)
 
     async def read_slowly() -> None:
-        async for _ in stream:
-            await asyncio.sleep(1)
+        async with stream:
+            async for _ in stream:
+                await asyncio.sleep(1)
 
     # asyncio.TimeoutError, not TimeoutError: they're only the same class on 3.11+.
     with pytest.raises(asyncio.TimeoutError):

@@ -20,10 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine
 from typing import Any, Generic, TypeVar
 
-from typing_extensions import TypeVar as TypeVarExt
+from typing_extensions import Self, TypeVar as TypeVarExt, override
 
 from genkit._core._logger import get_logger
 
@@ -183,50 +183,47 @@ def mirror_result(task: asyncio.Future[_ResultT], pick: Callable[[_ResultT], _Pi
 
 
 class StoppableStream(AsyncIterator[T]):
-    """The one reader of a run's chunks, which stops the run when you leave early.
+    """Single-pass ``AsyncIterator`` over a run's chunks, with explicit ``aclose()``.
 
-    Looking at it or pulling chunks with ``__anext__`` never stops the run by
-    itself. Each ``async for`` reads through a short-lived loop instead, because
-    a ``break`` only drops that loop: when Python closes it (a loop tick later,
-    or right away under ``contextlib.aclosing``) ``stop`` runs. Leaving by an
-    exception or a cancel stops it too; reading to the end doesn't. With no
-    ``stop``, leaving early just leaves.
+    ``__aiter__`` returns ``self`` (``aiter(s) is s``), so reading zero chunks,
+    pulling individual chunks with ``await anext(s)``, or exiting a bare
+    ``async for`` without closing leaves the background run going. Closing via
+    ``async with stream:``, ``contextlib.aclosing(s)``, or ``await s.aclose()``
+    stops the run if it hasn't finished and waits for cleanup.
     """
 
     def __init__(self, *, chunks: AsyncIterable[T], stop: Callable[[], Awaitable[None]] | None) -> None:
         self._chunks = chunks
         self._source: AsyncIterator[T] | None = None
         self._stop = stop
+        self._finished = False
 
-    def __aiter__(self) -> AsyncGenerator[T, None]:
-        return self._loop()
+    @override
+    def __aiter__(self) -> Self:
+        return self
 
+    @override
     async def __anext__(self) -> T:
-        return await self._next_chunk()
-
-    async def aclose(self) -> None:
-        """Stop the run if it's still going, and wait for it to end."""
-        if self._stop is not None:
-            await self._stop()
-
-    async def _next_chunk(self) -> T:
+        if self._finished:
+            raise StopAsyncIteration
         if self._source is None:
             self._source = self._chunks.__aiter__()
-        return await self._source.__anext__()
-
-    async def _loop(self) -> AsyncGenerator[T, None]:
-        finished = False
         try:
-            while True:
-                try:
-                    chunk = await self._next_chunk()
-                except StopAsyncIteration:
-                    finished = True
-                    return
-                yield chunk
-        finally:
-            if not finished:
-                await self.aclose()
+            return await self._source.__anext__()
+        except StopAsyncIteration:
+            self._finished = True
+            raise
+
+    async def aclose(self) -> None:
+        """Stop the run if it hasn't finished, and wait for it to end."""
+        if self._finished:
+            return
+        target = self._source if self._source is not None else self._chunks
+        source_aclose = getattr(target, 'aclose', None)
+        if source_aclose is not None:
+            await source_aclose()
+        if self._stop is not None:
+            await self._stop()
 
 
 def run_loop(coro: Coroutine[object, object, T], *, debug: bool | None = None) -> T:

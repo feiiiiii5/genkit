@@ -157,7 +157,7 @@ class ModelStreamResponse(StreamResponse[ModelResponseChunk[OutputT], ModelRespo
     """Chunks of a model reply, then the full ``ModelResponse``.
 
     Returned by ``ai.generate_stream()`` and ``prompt.stream()``. Iteration
-    and ``.response`` follow ``StreamResponse``; failures don't:
+    and ``.response`` follow ``StreamResponse``; failures and early exit don't:
 
     - **Before the request** (unknown model, bad config, ...): the loop and
       ``.response`` both raise the ``GenkitError`` (``NOT_FOUND``, ...).
@@ -165,6 +165,11 @@ class ModelStreamResponse(StreamResponse[ModelResponseChunk[OutputT], ModelRespo
       ends normally and ``.response`` resolves with ``error`` set and
       ``finish_reason == FAILED``. The chunks already received are the record
       of what was shown.
+    - **Early close** (``async with``, ``await result.aclose()``, or
+      ``contextlib.aclosing(result.stream)``): stops the in-flight model or
+      tool turn and awaits ``finally:`` cleanup; ``.response`` resolves with
+      ``finish_reason == ABORTED``, ``error.status == 'CANCELLED'``, and
+      ``messages`` ending at the last completed round.
 
     Example:
         ```python
